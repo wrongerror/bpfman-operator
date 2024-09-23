@@ -28,3 +28,6 @@ go.work
 
 # Temporary Kustomize file
 config/bpfman-deployment/kustomization.yaml
+
+# idea files
+.idea

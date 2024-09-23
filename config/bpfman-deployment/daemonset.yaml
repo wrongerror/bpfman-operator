@@ -59,7 +59,6 @@ spec:
       containers:
         - name: bpfman
           image: quay.io/bpfman/bpfman:latest
-          args: [--csi-support]
           securityContext:
             privileged: true
           imagePullPolicy: IfNotPresent
@@ -90,8 +89,6 @@ spec:
             - name: default-bpf-fs
               mountPath: /sys/fs/bpf
               mountPropagation: Bidirectional
-            - mountPath: /run/bpfman/csi
-              name: socket-dir
             - mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
               name: mountpoint-dir
@@ -139,35 +136,12 @@ spec:
               name: host-dockerd
             - mountPath: /etc/crictl.yaml
               name: host-crictl-config
-        - name: node-driver-registrar
-          image: quay.io/bpfman/csi-node-driver-registrar:v2.9.0
-          imagePullPolicy: IfNotPresent
-          lifecycle:
-            preStop:
-              exec:
-                command:
-                  - /bin/sh
-                  - -c
-                  - rm -rf /registration/csi-bpfman /registration/csi-bpfman-reg.sock
-          args:
-            - --v=5
-            - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path=/var/lib/kubelet/plugins/csi-bpfman/csi.sock
-          env:
-            - name: KUBE_NODE_NAME
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: spec.nodeName
-          volumeMounts:
-            - mountPath: /csi
-              name: socket-dir
-            - mountPath: /registration
-              name: registration-dir
       terminationGracePeriodSeconds: 15
       volumes:
         - name: bpfman-sock
-          emptyDir: {}
+          hostPath:
+            path: /run/bpfman-sock
+            type: DirectoryOrCreate
         - name: runtime
           hostPath:
             path: /run/bpfman
@@ -185,11 +159,6 @@ spec:
           hostPath:
             path: /sys/fs/bpf
             type: DirectoryOrCreate
-        # This volume is where the socket for kubelet->driver communication is held
-        - hostPath:
-            path: /var/lib/kubelet/plugins/csi-bpfman
-            type: DirectoryOrCreate
-          name: socket-dir
         # This volume is where the driver mounts volumes
         - hostPath:
             path: /var/lib/kubelet/pods
