@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
@@ -310,6 +311,32 @@ func LoadAndConfigureBpfmanDs(config *corev1.ConfigMap, path string) *appsv1.Dae
 	bpfmanHealthProbeAddr := config.Data["bpfman.agent.healthprobe.addr"]
 	bpfmanMetricAddr := config.Data["bpfman.agent.metric.addr"]
 
+	// Resource configuration from ConfigMap
+	// bpfman container resources
+	bpfmanLimitsCPU := config.Data["bpfman.resources.limits.cpu"]
+	bpfmanLimitsMemory := config.Data["bpfman.resources.limits.memory"]
+	bpfmanRequestsCPU := config.Data["bpfman.resources.requests.cpu"]
+	bpfmanRequestsMemory := config.Data["bpfman.resources.requests.memory"]
+
+	// bpfman-agent container resources
+	bpfmanAgentLimitsCPU := config.Data["bpfman.agent.resources.limits.cpu"]
+	bpfmanAgentLimitsMemory := config.Data["bpfman.agent.resources.limits.memory"]
+	bpfmanAgentRequestsCPU := config.Data["bpfman.agent.resources.requests.cpu"]
+	bpfmanAgentRequestsMemory := config.Data["bpfman.agent.resources.requests.memory"]
+
+	// Mount bpffs init container configuration
+	mountBpffsImage := config.Data["bpfman.init.mountbpffs.image"]
+	mountBpffsCapabilitiesStr := config.Data["bpfman.init.mountbpffs.capabilities"]
+
+	// Parse comma-separated capabilities string to slice
+	var mountBpffsCapabilities []corev1.Capability
+	if mountBpffsCapabilitiesStr != "" {
+		for _, capability := range strings.Split(mountBpffsCapabilitiesStr, ",") {
+			trimmedCap := strings.TrimSpace(capability)
+			mountBpffsCapabilities = append(mountBpffsCapabilities, corev1.Capability(trimmedCap))
+		}
+	}
+
 	// Annotate the log level on the ds so we get automatic restarts on changes.
 	if staticBpfmanDeployment.Spec.Template.ObjectMeta.Annotations == nil {
 		staticBpfmanDeployment.Spec.Template.ObjectMeta.Annotations = make(map[string]string)
@@ -319,14 +346,51 @@ func LoadAndConfigureBpfmanDs(config *corev1.ConfigMap, path string) *appsv1.Dae
 	staticBpfmanDeployment.Spec.Template.ObjectMeta.Annotations["bpfman.io.bpfman.agent.loglevel"] = bpfmanAgentLogLevel
 	staticBpfmanDeployment.Spec.Template.ObjectMeta.Annotations["bpfman.io.bpfman.agent.healthprobeaddr"] = bpfmanHealthProbeAddr
 	staticBpfmanDeployment.Spec.Template.ObjectMeta.Annotations["bpfman.io.bpfman.agent.metricaddr"] = bpfmanMetricAddr
+
 	staticBpfmanDeployment.Name = internal.BpfmanDsName
 	staticBpfmanDeployment.Namespace = config.Namespace
 	staticBpfmanDeployment.Spec.Template.Spec.AutomountServiceAccountToken = ptr.To(true)
+
+	for i, container := range staticBpfmanDeployment.Spec.Template.Spec.InitContainers {
+		if container.Name == internal.BpfmanMountBpffsContainerName {
+			mountBpffsContainer := &staticBpfmanDeployment.Spec.Template.Spec.InitContainers[i]
+			// Set init container image if specified
+			if mountBpffsImage != "" {
+				mountBpffsContainer.Image = mountBpffsImage
+			}
+			// Configure security context and capabilities
+			if len(mountBpffsCapabilities) > 0 {
+				if mountBpffsContainer.SecurityContext == nil {
+					mountBpffsContainer.SecurityContext = &corev1.SecurityContext{}
+				}
+				if mountBpffsContainer.SecurityContext.Capabilities == nil {
+					mountBpffsContainer.SecurityContext.Capabilities = &corev1.Capabilities{}
+				}
+				mountBpffsContainer.SecurityContext.Capabilities.Add = mountBpffsCapabilities
+			}
+		}
+	}
+
 	for cindex, container := range staticBpfmanDeployment.Spec.Template.Spec.Containers {
 		if container.Name == internal.BpfmanContainerName {
 			staticBpfmanDeployment.Spec.Template.Spec.Containers[cindex].Image = bpfmanImage
+
+			// Apply resource configuration to bpfman container
+			resources := createResourceRequirements(
+				bpfmanLimitsCPU, bpfmanLimitsMemory,
+				bpfmanRequestsCPU, bpfmanRequestsMemory,
+			)
+			staticBpfmanDeployment.Spec.Template.Spec.Containers[cindex].Resources = resources
+
 		} else if container.Name == internal.BpfmanAgentContainerName {
 			staticBpfmanDeployment.Spec.Template.Spec.Containers[cindex].Image = bpfmanAgentImage
+
+			// Apply resource configuration to bpfman-agent container
+			resources := createResourceRequirements(
+				bpfmanAgentLimitsCPU, bpfmanAgentLimitsMemory,
+				bpfmanAgentRequestsCPU, bpfmanAgentRequestsMemory,
+			)
+			staticBpfmanDeployment.Spec.Template.Spec.Containers[cindex].Resources = resources
 
 			for aindex, arg := range container.Args {
 				if bpfmanHealthProbeAddr != "" {
@@ -344,7 +408,56 @@ func LoadAndConfigureBpfmanDs(config *corev1.ConfigMap, path string) *appsv1.Dae
 			}
 		}
 	}
-	controllerutil.AddFinalizer(staticBpfmanDeployment, internal.BpfmanOperatorFinalizer)
 
+	controllerutil.AddFinalizer(staticBpfmanDeployment, internal.BpfmanOperatorFinalizer)
 	return staticBpfmanDeployment
+}
+
+// createResourceRequirements creates resource requirements based on ConfigMap values or defaults.
+// If values are not provided in ConfigMap, it uses standard defaults for all containers.
+func createResourceRequirements(
+	limitsCPU, limitsMemory, requestsCPU, requestsMemory string,
+) corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{},
+		Requests: corev1.ResourceList{},
+	}
+
+	// Standard default values for all containers
+	const (
+		defaultLimitsCPU      = "500m"  // 0.5 CPU cores
+		defaultLimitsMemory   = "1Gi"   // 1 GiB
+		defaultRequestsCPU    = "50m"   // 0.05 CPU cores
+		defaultRequestsMemory = "256Mi" // 256 MiB
+	)
+
+	// Set CPU limits
+	if limitsCPU != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(limitsCPU)
+	} else {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(defaultLimitsCPU)
+	}
+
+	// Set Memory limits
+	if limitsMemory != "" {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(limitsMemory)
+	} else {
+		resources.Limits[corev1.ResourceMemory] = resource.MustParse(defaultLimitsMemory)
+	}
+
+	// Set CPU requests
+	if requestsCPU != "" {
+		resources.Requests[corev1.ResourceCPU] = resource.MustParse(requestsCPU)
+	} else {
+		resources.Requests[corev1.ResourceCPU] = resource.MustParse(defaultRequestsCPU)
+	}
+
+	// Set Memory requests
+	if requestsMemory != "" {
+		resources.Requests[corev1.ResourceMemory] = resource.MustParse(requestsMemory)
+	} else {
+		resources.Requests[corev1.ResourceMemory] = resource.MustParse(defaultRequestsMemory)
+	}
+
+	return resources
 }

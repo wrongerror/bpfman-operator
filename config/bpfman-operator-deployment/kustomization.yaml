@@ -6,3 +6,6 @@ images:
 - name: quay.io/bpfman/bpfman-operator
   newName: quay.io/bpfman/bpfman-operator
   newTag: latest
+- name: wrongerror/bpfman-operator
+  newName: wrongerror/bpfman-operator
+  newTag: 0.5.5

@@ -3,7 +3,7 @@
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.5.5
+VERSION ?= v0.5.5
 
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
@@ -29,7 +29,7 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # bpfman.io/bpfman-operator-bundle:$VERSION and bpfman.io/bpfman-operator-catalog:$VERSION.
-IMAGE_TAG_BASE ?= quay.io/bpfman/bpfman-operator
+IMAGE_TAG_BASE ?= wrongerror/bpfman-operator
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -45,11 +45,11 @@ USE_IMAGE_DIGESTS ?= false
 ifeq ($(USE_IMAGE_DIGESTS), true)
 	BUNDLE_GEN_FLAGS += --use-image-digests
 endif
-IMAGE_TAG ?= latest
+IMAGE_TAG ?= $(VERSION)
 # Image URL to use all building/pushing image targets
-BPFMAN_IMG ?= quay.io/bpfman/bpfman:$(IMAGE_TAG)
-BPFMAN_AGENT_IMG ?= quay.io/bpfman/bpfman-agent:$(IMAGE_TAG)
-BPFMAN_OPERATOR_IMG ?= quay.io/bpfman/bpfman-operator:$(IMAGE_TAG)
+BPFMAN_IMG ?= wrongerror/bpfman:$(IMAGE_TAG)
+BPFMAN_AGENT_IMG ?= wrongerror/bpfman-agent:$(IMAGE_TAG)
+BPFMAN_OPERATOR_IMG ?= wrongerror/bpfman-operator:$(IMAGE_TAG)
 KIND_CLUSTER_NAME ?= bpfman-deployment
 
 # These environment variable keys need to be exported as the
@@ -303,7 +303,7 @@ test-integration: ## Run Integration tests.
 ## See https://github.com/operator-framework/operator-sdk/issues/6285.
 .PHONY: bundle
 bundle: operator-sdk generate kustomize manifests ## Generate bundle manifests and metadata, then validate generated files.
-	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
+	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set imagewrongerror/bpfman-operator=${BPFMAN_OPERATOR_IMG}
 	cd config/bpfman-deployment && \
 	  $(SED) -e 's@bpfman\.image=.*@bpfman.image=$(BPFMAN_IMG)@' \
 	      -e 's@bpfman\.agent\.image=.*@bpfman.agent.image=$(BPFMAN_AGENT_IMG)@' \
@@ -333,6 +333,14 @@ LOCAL_GOCACHE_PATH ?= $(shell go env GOCACHE)
 CONTAINER_GOCACHE_PATH ?= /root/.cache/go-build
 $(shell mkdir -p $(LOCAL_GOCACHE_PATH))
 endif
+
+.PHONY: build-images-multi-arch
+build-images-multi-arch: ## Build multi-arch images and push
+	@echo "Building images for linux/amd64 and linux/arm64"
+	docker buildx build --platform linux/amd64,linux/arm64 -t ${BPFMAN_OPERATOR_IMG} \
+		-f Containerfile.bpfman-operator --push .
+	docker buildx build --platform linux/amd64,linux/arm64 -t ${BPFMAN_AGENT_IMG} \
+		-f Containerfile.bpfman-agent --push .
 
 .PHONY: build-images
 build-images: build-operator-image build-agent-image ## Build bpfman-agent and bpfman-operator images.
@@ -425,7 +433,7 @@ destroy-kind: ## Destroy Kind cluster
 ## Default deploy target is KIND based with its CSI driver initialized.
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy bpfman-operator to the K8s cluster specified in ~/.kube/config with the csi driver initialized.
-	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
+	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image wrongerror/bpfman-operator=${BPFMAN_OPERATOR_IMG}
 	cd config/bpfman-deployment && \
 	 $(SED)  -e 's@bpfman\.image=.*@bpfman.image=$(BPFMAN_IMG)@' \
 	      -e 's@bpfman\.agent\.image=.*@bpfman.agent.image=$(BPFMAN_AGENT_IMG)@' \
@@ -450,7 +458,7 @@ run-on-kind: kustomize setup-kind build-images load-images-kind deploy ## Kind D
 
 .PHONY: deploy-openshift
 deploy-openshift: manifests kustomize ## Deploy bpfman-operator to the Openshift cluster specified in ~/.kube/config.
-	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image quay.io/bpfman/bpfman-operator=${BPFMAN_OPERATOR_IMG}
+	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image wrongerror/bpfman-operator=${BPFMAN_OPERATOR_IMG}
 	cd config/bpfman-deployment && \
 	  $(SED) -e 's@bpfman\.image=.*@bpfman.image=$(BPFMAN_IMG)@' \
 	      -e 's@bpfman\.agent\.image=.*@bpfman.agent.image=$(BPFMAN_AGENT_IMG)@' \
@@ -470,3 +478,17 @@ catalog-deploy: ## Deploy a catalog image.
 .PHONY: catalog-undeploy
 catalog-undeploy: ## Undeploy a catalog image.
 	kubectl delete --ignore-not-found=$(ignore-not-found) -f ./config/catalog/catalog.yaml
+
+# install helmify
+HELMIFY ?= $(LOCALBIN)/helmify
+.PHONY: helmify
+helmify: $(HELMIFY) ## Download helmify locally if necessary.
+$(HELMIFY): $(LOCALBIN)
+	test -s $(LOCALBIN)/helmify || GOBIN=$(LOCALBIN) go install github.com/arttor/helmify/cmd/helmify@latest
+helm: manifests kustomize helmify
+	cd config/bpfman-operator-deployment && $(KUSTOMIZE) edit set image wrongerror/bpfman-operator=${BPFMAN_OPERATOR_IMG}
+	cd config/bpfman-deployment && \
+	 $(SED)  -e 's@bpfman\.image=.*@bpfman.image=$(BPFMAN_IMG)@' \
+	      -e 's@bpfman\.agent\.image=.*@bpfman.agent.image=$(BPFMAN_AGENT_IMG)@' \
+		  kustomization.yaml.env > kustomization.yaml
+	$(KUSTOMIZE) build config/default | $(HELMIFY) -crd-dir -preserve-ns -original-name bpfman-operator
